@@ -15,10 +15,11 @@ pub mod traits;
 
 pub mod default_weights;
 mod utils;
+// use serde_json::json;
 
 #[frame_support::pallet]
 pub mod pallet {
-	use codec::{Decode, Encode};
+	// use codec::{Decode, Encode};
 	use frame_support::{
 		dispatch::{DispatchError, DispatchResult, DispatchResultWithPostInfo, HasCompact},
 		pallet_prelude::*,
@@ -37,11 +38,19 @@ pub mod pallet {
 		convert::{TryFrom, TryInto},
 		prelude::*,
 	};
-
+	use sp_runtime::{
+		offchain::{
+			http,
+			Duration,
+		},
+		RuntimeDebug,
+	};
+	use sp_std::vec::Vec;
+	use lite_json::json::JsonValue;
 	pub use crate::feed::{FeedBuilder, FeedBuilderOf};
 	use crate::{
 		traits::OnAnswerHandler,
-		utils::{median, with_transaction_result},
+		utils::median,
 	};
 
 	pub type BalanceOf<T> =
@@ -50,7 +59,7 @@ pub mod pallet {
 	pub type RoundId = u32;
 
 	/// The configuration for an oracle feed.
-	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug)]
+	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 	pub struct FeedConfig<
 		AccountId: Parameter,
 		Balance: Parameter,
@@ -109,7 +118,7 @@ pub mod pallet {
 	/// Round data relevant to consumers.
 	/// Will only be constructed once minimum amount of submissions have
 	/// been provided.
-	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug)]
+	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 	pub struct Round<BlockNumber, Value> {
 		pub started_at: BlockNumber,
 		pub answer: Option<Value>,
@@ -134,19 +143,19 @@ pub mod pallet {
 	}
 
 	/// Round data relevant to oracles.
-	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug)]
-	pub struct RoundDetails<Balance, BlockNumber, Value> {
-		pub submissions: Vec<Value>,
+	#[derive(Clone, Encode, Decode, Default, TypeInfo, MaxEncodedLen)]
+	pub struct RoundDetails<Balance, BlockNumber, BoundedValues> {
+		pub submissions: BoundedValues,
 		pub submission_count_bounds: (u32, u32),
 		pub payment: Balance,
 		pub timeout: BlockNumber,
 	}
 
 	pub type RoundDetailsOf<T> =
-		RoundDetails<BalanceOf<T>, <T as frame_system::Config>::BlockNumber, <T as Config>::Value>;
+		RoundDetails<BalanceOf<T>, <T as frame_system::Config>::BlockNumber, BoundedVec<<T as Config>::Value, <T as Config>::OracleCountLimit>>;
 
 	/// Meta data tracking withdrawable rewards and admin for an oracle.
-	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug)]
+	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 	pub struct OracleMeta<AccountId, Balance> {
 		pub withdrawable: Balance,
 		pub admin: AccountId,
@@ -156,7 +165,7 @@ pub mod pallet {
 	pub type OracleMetaOf<T> = OracleMeta<<T as frame_system::Config>::AccountId, BalanceOf<T>>;
 
 	/// Meta data tracking the oracle status for a feed.
-	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug)]
+	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 	pub struct OracleStatus<Value> {
 		pub starting_round: RoundId,
 		pub ending_round: Option<RoundId>,
@@ -184,14 +193,14 @@ pub mod pallet {
 	}
 
 	/// Used to store round requester permissions for accounts.
-	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug)]
+	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug, MaxEncodedLen, TypeInfo)]
 	pub struct Requester {
 		pub delay: RoundId,
 		pub last_started_round: Option<RoundId>,
 	}
 
 	/// Round data as served by the `FeedInterface`.
-	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug)]
+	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug, MaxEncodedLen, TypeInfo)]
 	pub struct RoundData<BlockNumber, Value> {
 		pub started_at: BlockNumber,
 		pub answer: Value,
@@ -241,7 +250,7 @@ pub mod pallet {
 
 	/// Trait for interacting with the feeds in the pallet.
 	pub trait FeedOracle<T: frame_system::Config> {
-		type FeedId: Parameter + BaseArithmetic;
+		type FeedId: Parameter + BaseArithmetic + TypeInfo + MaxEncodedLen;
 		type Feed: FeedInterface<T>;
 		type MutableFeed: MutableFeedInterface<T>;
 
@@ -258,7 +267,7 @@ pub mod pallet {
 
 	/// Trait for read-only access to a feed.
 	pub trait FeedInterface<T: frame_system::Config> {
-		type Value: Parameter + BaseArithmetic;
+		type Value: Parameter + BaseArithmetic + MaxEncodedLen;
 
 		/// Returns the id of the first round that contains non-default data.
 		///
@@ -300,7 +309,7 @@ pub mod pallet {
 		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
 
 		/// Type for feed indexing.
-		type FeedId: Member + Parameter + Default + Copy + HasCompact + BaseArithmetic;
+		type FeedId: Member + Parameter + Default + Copy + HasCompact + BaseArithmetic + MaxEncodedLen;
 
 		/// Oracle feed values.
 		type Value: Member
@@ -310,7 +319,9 @@ pub mod pallet {
 			+ HasCompact
 			+ PartialEq
 			+ BaseArithmetic
-			+ MaybeSerializeDeserialize;
+			+ MaybeSerializeDeserialize
+			+ Encode
+			+ MaxEncodedLen;
 
 		/// Interface used for balance transfers.
 		type Currency: ReservableCurrency<Self::AccountId>;
@@ -327,7 +338,8 @@ pub mod pallet {
 		type StringLimit: Get<u32>;
 
 		/// Maximum number of oracles per feed.
-		type OracleCountLimit: Get<u32>;
+		#[pallet::constant]
+		type OracleCountLimit: Get<u32> ;
 
 		/// Maximum number of feeds.
 		type FeedLimit: Get<Self::FeedId>;
@@ -343,10 +355,14 @@ pub mod pallet {
 	#[pallet::generate_store(pub (super) trait Store)]
 	pub struct Pallet<T>(_);
 
+	// LTK : this PR https://github.com/paritytech/substrate/pull/10403 has removed default account
+	#[pallet::type_value]
+	pub fn DefaultAccount<T: Config>() -> T::AccountId { T::AccountId::decode(&mut sp_runtime::traits::TrailingZeroInput::zeroes()).expect("infinite length input; no invalid inputs for type; qed") }
+
 	#[pallet::storage]
 	#[pallet::getter(fn pallet_admin)]
 	/// The account controlling the funds for this pallet.
-	pub type PalletAdmin<T: Config> = StorageValue<_, T::AccountId, ValueQuery>;
+	pub type PalletAdmin<T: Config> = StorageValue<Value = T::AccountId, QueryKind = ValueQuery, OnEmpty = DefaultAccount<T>>;
 
 	#[pallet::storage]
 	// possible optimization: put together with admin?
@@ -428,14 +444,6 @@ pub mod pallet {
 	>;
 
 	#[pallet::event]
-	#[pallet::metadata(
-		T::AccountId = "AccountId",
-		T::FeedId = "FeedId",
-		T::BlockNumber = "BlockNumber",
-		T::Value = "Value",
-		RoundId = "RoundId",
-		SubmissionBounds = "SubmissionBounds"
-	)]
 	#[pallet::generate_deposit(pub (super) fn deposit_event)]
 	pub enum Event<T: Config> {
 		/// A new oracle feed was created. \[feed_id, creator\]
@@ -587,7 +595,32 @@ pub mod pallet {
 	}
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+
+		fn on_finalize(_block_number: T::BlockNumber) {
+			log::info!("***** Chainlink Pricefeed on_finalize");
+		}
+
+		/// Offchain Worker entry point.
+		///
+		/// By implementing `fn offchain_worker` you declare a new offchain worker.
+		/// This function will be called when the node is fully synced and a new best block is
+		/// succesfuly imported.
+		/// Note that it's not guaranteed for offchain workers to run on EVERY block, there might
+		/// be cases where some blocks are skipped, or for some the worker runs twice (re-orgs),
+		/// so the code should be able to handle that.
+		/// You can use `Local Storage` API to coordinate runs of the worker.
+		fn offchain_worker(_block_number: T::BlockNumber) {
+			// Note that having logs compiled to WASM may cause the size of the blob to increase
+			// significantly. You can use `RuntimeDebug` custom derive to hide details of the types
+			// in WASM. The `sp-api` crate also provides a feature `disable-logging` to disable
+			// all logging and thus, remove any logging from the WASM.
+			log::info!("***** Chainlink Pricefeed Offchain worker");
+
+			Self::fetch_price().map_err(|err| log::warn!("{:?}", err)).ok();
+			Self::trigger_chainlink_job().map_err(|err| log::warn!("{:?}", err)).ok();
+		}
+	}
 
 	impl<T: Config> Pallet<T> {
 		/// Shortcut for getting account ID
@@ -605,6 +638,7 @@ pub mod pallet {
 		}
 
 		/// Initialize the feed and write to storage
+		#[transactional]
 		fn do_create_feed(
 			new_config: FeedConfigOf<T>,
 			oracles: Vec<(T::AccountId, T::AccountId)>,
@@ -621,7 +655,7 @@ pub mod pallet {
 			let mut feed = Feed::<T>::new(id, new_config); // synced on drop
 			let started_at = frame_system::Pallet::<T>::block_number();
 			let updated_at = Some(started_at);
-			// Store a dummy value for round 0 because we will not get useful data for
+			// Store a dumm^ value for round 0 because we will not get useful data for
 			// it, but need some seed data that future rounds can carry over.
 			Rounds::<T>::insert(
 				id,
@@ -640,6 +674,122 @@ pub mod pallet {
 
 			Ok(id)
 		}
+
+		fn fetch_price() -> Result<u32, http::Error> {
+			// We want to keep the offchain worker execution time reasonable, so we set a hard-coded
+			// deadline to 2s to complete the external call.
+			// You can also wait idefinitely for the response, however you may still get a timeout
+			// coming from the host machine.
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
+			// Initiate an external HTTP GET request.
+			// This is using high-level wrappers from `sp_runtime`, for the low-level calls that
+			// you can find in `sp_io`. The API is trying to be similar to `reqwest`, but
+			// since we are running in a custom WASM execution environment we can't simply
+			// import the library here.
+			let request =
+				http::Request::get("https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=USD");
+			// We set the deadline for sending of the request, note that awaiting response can
+			// have a separate deadline. Next we send the request, before that it's also possible
+			// to alter request headers or stream body content in case of non-GET requests.
+			let pending = request.deadline(deadline).send().map_err(|_| http::Error::IoError)?;
+	
+			// The request is already being processed by the host, we are free to do anything
+			// else in the worker (we can send multiple concurrent requests too).
+			// At some point however we probably want to check the response though,
+			// so we can block current thread and wait for it to finish.
+			// Note that since the request is being driven by the host, we don't have to wait
+			// for the request to have it complete, we will just not read the response.
+			let response = pending.try_wait(deadline).map_err(|_| http::Error::DeadlineReached)??;
+			// Let's check the status code before we proceed to reading the response.
+			if response.code != 200 {
+				log::warn!("Unexpected status code: {}", response.code);
+				return Err(http::Error::Unknown)
+			}
+	
+			// Next we want to fully read the response body and collect it to a vector of bytes.
+			// Note that the return object allows you to read the body in chunks as well
+			// with a way to control the deadline.
+			let body = response.body().collect::<Vec<u8>>();
+	
+			// Create a str slice from the body.
+			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+				log::warn!("No UTF8 body");
+				http::Error::Unknown
+			})?;
+	
+			let price = match Self::parse_price(body_str) {
+				Some(price) => Ok(price),
+				None => {
+					log::warn!("Unable to extract price from the response: {:?}", body_str);
+					Err(http::Error::Unknown)
+				},
+			}?;
+	
+			log::warn!("Got price: {} cents", price);
+	
+			Ok(price)
+		}		
+
+		fn trigger_chainlink_job() -> Result<(), http::Error> {
+
+			let post_body = vec![r#"{
+				"id": "001",
+				"data":{
+					"request_type": "triggerexternaljob",
+					"job_external_uuid": "9ce988a3-9b74-4525-91fd-2709b7815789",
+					"request_id": "002",
+					"feed_id": "0",
+					"round_id": "15"
+				}
+			
+			}"#];
+
+			let request = http::Request::post("http://sublink-adapter:8080", post_body);
+			let timeout =
+				sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
+			let pending = request
+				.deadline(timeout)
+				.send()
+				.map_err(|_| http::Error::IoError)?;
+		
+			let response = pending
+				.try_wait(timeout)
+				.map_err(|_| http::Error::DeadlineReached)??;
+		
+			if response.code != 200 {
+				return Err(http::Error::Unknown);
+			}
+			let body = response.body().collect::<Vec<u8>>();
+			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+				log::warn!("No UTF8 body");
+				http::Error::Unknown
+			})?;
+			// let response_result: ResponseResult = serde_json::from_str::<ResponseResult>(&res_body)
+			// 	.map_err(|_| http::Error::IoError)?;
+			log::warn!("Got answer: {:?}", body_str);
+			Ok(())
+		}		
+
+		/// Parse the price from the given JSON string using `lite-json`.
+		///
+		/// Returns `None` when parsing failed or `Some(price in cents)` when parsing is successful.
+		fn parse_price(price_str: &str) -> Option<u32> {
+			let val = lite_json::parse_json(price_str);
+			let price = match val.ok()? {
+				JsonValue::Object(obj) => {
+					let (_, v) = obj.into_iter().find(|(k, _)| k.iter().copied().eq("USD".chars()))?;
+					match v {
+						JsonValue::Number(number) => number,
+						_ => return None,
+					}
+				},
+				_ => return None,
+			};
+
+			let exp = price.fraction_length.saturating_sub(2);
+			Some(price.integer as u32 * 100 + (price.fraction / 10_u64.pow(exp)) as u32)
+		}
+
 	}
 
 	#[pallet::call]
@@ -696,6 +846,7 @@ pub mod pallet {
 		/// Emits `FeedCreated` event when successful.
 		#[pallet::weight(T::WeightInfo::create_feed(oracles.len() as u32))]
 		#[allow(clippy::too_many_arguments)]
+		#[transactional]
 		pub fn create_feed(
 			origin: OriginFor<T>,
 			payment: BalanceOf<T>,
@@ -708,7 +859,9 @@ pub mod pallet {
 			oracles: Vec<(T::AccountId, T::AccountId)>,
 			pruning_window: Option<u32>,
 			max_debt: Option<BalanceOf<T>>,
-		) -> DispatchResultWithPostInfo {
+		) -> DispatchResult {
+
+			log::info!("***** Creating feed");
 			let owner = ensure_signed(origin)?;
 			ensure!(
 				FeedCreators::<T>::contains_key(&owner),
@@ -752,11 +905,9 @@ pub mod pallet {
 				max_debt,
 			};
 
-			with_transaction_result(|| -> DispatchResultWithPostInfo {
-				let id = Self::do_create_feed(new_config, oracles)?;
-				Self::deposit_event(Event::FeedCreated(id, owner));
-				Ok(().into())
-			})
+			let id = Self::do_create_feed(new_config, oracles)?;
+			Self::deposit_event(Event::FeedCreated(id, owner));
+			Ok(().into())
 		}
 
 		/// Initiate the transfer of the feed to `new_owner`.
@@ -881,160 +1032,161 @@ pub mod pallet {
 		#[pallet::weight(T::WeightInfo::submit_opening_round_answers().max(
 		T::WeightInfo::submit_closing_answer(T::OracleCountLimit::get())
 		))]
+		#[transactional]
 		pub fn submit(
 			origin: OriginFor<T>,
 			#[pallet::compact] feed_id: T::FeedId,
 			#[pallet::compact] round_id: RoundId,
 			#[pallet::compact] submission: T::Value,
-		) -> DispatchResultWithPostInfo {
+		) -> DispatchResult {
 			let oracle = ensure_signed(origin)?;
 
-			with_transaction_result(|| -> DispatchResultWithPostInfo {
-				let mut feed = Feed::<T>::load_from(feed_id).ok_or(Error::<T>::FeedNotFound)?;
-				let mut oracle_status =
-					Self::oracle_status(feed_id, &oracle).ok_or(Error::<T>::NotOracle)?;
-				feed.ensure_valid_round(&oracle, round_id)?;
+			let mut feed = Feed::<T>::load_from(feed_id).ok_or(Error::<T>::FeedNotFound)?;
+			let mut oracle_status =
+				Self::oracle_status(feed_id, &oracle).ok_or(Error::<T>::NotOracle)?;
+			feed.ensure_valid_round(&oracle, round_id)?;
 
-				let (min_val, max_val) = feed.config.submission_value_bounds;
-				ensure!(submission >= min_val, Error::<T>::SubmissionBelowMinimum);
-				ensure!(submission <= max_val, Error::<T>::SubmissionAboveMaximum);
+			let (min_val, max_val) = feed.config.submission_value_bounds;
+			ensure!(submission >= min_val, Error::<T>::SubmissionBelowMinimum);
+			ensure!(submission <= max_val, Error::<T>::SubmissionAboveMaximum);
 
-				let new_round_id = feed
-					.reporting_round_id()
-					.checked_add(One::one())
-					.ok_or(Error::<T>::Overflow)?;
-				let next_eligible_round = oracle_status
-					.last_started_round
-					.unwrap_or_else(Zero::zero)
-					.checked_add(feed.config.restart_delay)
-					.ok_or(Error::<T>::Overflow)?
-					.checked_add(One::one())
-					.ok_or(Error::<T>::Overflow)?;
-				let eligible_to_start =
-					round_id >= next_eligible_round || oracle_status.last_started_round.is_none();
+			let new_round_id = feed
+				.reporting_round_id()
+				.checked_add(One::one())
+				.ok_or(Error::<T>::Overflow)?;
+			let next_eligible_round = oracle_status
+				.last_started_round
+				.unwrap_or_else(Zero::zero)
+				.checked_add(feed.config.restart_delay)
+				.ok_or(Error::<T>::Overflow)?
+				.checked_add(One::one())
+				.ok_or(Error::<T>::Overflow)?;
+			let eligible_to_start =
+				round_id >= next_eligible_round || oracle_status.last_started_round.is_none();
 
-				// initialize the round if conditions are met
-				if round_id == new_round_id && eligible_to_start {
-					let started_at = feed.initialize_round(new_round_id)?;
+			// initialize the round if conditions are met
+			if round_id == new_round_id && eligible_to_start {
+				let started_at = feed.initialize_round(new_round_id)?;
 
-					Self::deposit_event(Event::NewRound(
-						feed_id,
-						new_round_id,
-						oracle.clone(),
-						started_at,
-					));
-
-					oracle_status.last_started_round = Some(new_round_id);
-				}
-
-				// record submission
-				let mut details = Details::<T>::take(feed_id, round_id)
-					.ok_or(Error::<T>::NotAcceptingSubmissions)?;
-				details.submissions.push(submission);
-
-				oracle_status.last_reported_round = Some(round_id);
-				oracle_status.latest_submission = Some(submission);
-				OracleStatuses::<T>::insert(feed_id, &oracle, oracle_status);
-				Self::deposit_event(Event::SubmissionReceived(
+				Self::deposit_event(Event::NewRound(
 					feed_id,
-					round_id,
-					submission,
+					new_round_id,
 					oracle.clone(),
+					started_at,
 				));
 
-				// update round answer
-				let (min_count, max_count) = details.submission_count_bounds;
-				if details.submissions.len() >= min_count as usize {
-					let updated_at = frame_system::Pallet::<T>::block_number();
-					let new_answer = median(&mut details.submissions);
-					let round = RoundData {
-						started_at: Self::round(feed_id, round_id)
-							.ok_or(Error::<T>::RoundNotFound)?
-							.started_at,
-						answer: new_answer,
-						updated_at,
-						answered_in_round: round_id,
-					};
+				oracle_status.last_started_round = Some(new_round_id);
+			}
 
-					Rounds::<T>::insert(feed_id, round_id, round.clone().into_round());
+			// record submission
+			let mut details = Details::<T>::take(feed_id, round_id)
+				.ok_or(Error::<T>::NotAcceptingSubmissions)?;
+			// LTK : should check number of submissions
+			details.submissions.try_push(submission).expect("Enough submissions for this round");
 
-					feed.config.latest_round = round_id;
-					if feed.config.first_valid_round.is_none() {
-						feed.config.first_valid_round = Some(round_id);
-					}
-					// the previous rounds is not eligible for answers any more, so we close it
-					let prev_round_id = round_id.saturating_sub(1);
-					if prev_round_id > 0 {
-						Details::<T>::remove(feed_id, prev_round_id);
-					}
-					// prune the oldest round
-					feed.prune_oldest();
+			oracle_status.last_reported_round = Some(round_id);
+			oracle_status.latest_submission = Some(submission);
+			OracleStatuses::<T>::insert(feed_id, &oracle, oracle_status);
+			Self::deposit_event(Event::SubmissionReceived(
+				feed_id,
+				round_id,
+				submission,
+				oracle.clone(),
+			));
 
-					T::OnAnswerHandler::on_answer(feed_id, round);
-					Self::deposit_event(Event::AnswerUpdated(
-						feed_id, round_id, new_answer, updated_at,
-					));
+			// update round answer
+			let (min_count, max_count) = details.submission_count_bounds;
+			if details.submissions.len() >= min_count as usize {
+				let updated_at = frame_system::Pallet::<T>::block_number();
+				let mut submissions = details.submissions.clone().into_inner();
+				let new_answer = median(&mut submissions);
+				let round = RoundData {
+					started_at: Self::round(feed_id, round_id)
+						.ok_or(Error::<T>::RoundNotFound)?
+						.started_at,
+					answer: new_answer,
+					updated_at,
+					answered_in_round: round_id,
+				};
+
+				Rounds::<T>::insert(feed_id, round_id, round.clone().into_round());
+
+				feed.config.latest_round = round_id;
+				if feed.config.first_valid_round.is_none() {
+					feed.config.first_valid_round = Some(round_id);
 				}
-
-				// update oracle rewards and try to reserve them
-				let payment = details.payment;
-				// track the debt in case we cannot reserve
-				T::Currency::reserve(&Self::account_id(), payment).or_else(
-					|_| -> DispatchResult {
-						// track the debt in case we cannot reserve
-						let mut new_debt = feed.config.debt;
-						new_debt = new_debt.checked_add(&payment).ok_or(Error::<T>::Overflow)?;
-
-						if let Some(max_debt) = feed.config.max_debt {
-							ensure!(new_debt <= max_debt, <Error<T>>::MaxDebtReached);
-						}
-
-						feed.config.debt = new_debt;
-						Ok(())
-					},
-				)?;
-
-				let mut oracle_meta = Self::oracle(&oracle).ok_or(Error::<T>::OracleNotFound)?;
-				oracle_meta.withdrawable = oracle_meta
-					.withdrawable
-					.checked_add(&payment)
-					.ok_or(Error::<T>::Overflow)?;
-				Oracles::<T>::insert(&oracle, oracle_meta);
-
-				// delete the details if the maximum count has been reached
-				if details.submissions.len() < max_count as usize {
-					Details::<T>::insert(feed_id, round_id, details);
+				// the previous rounds is not eligible for answers any more, so we close it
+				let prev_round_id = round_id.saturating_sub(1);
+				if prev_round_id > 0 {
+					Details::<T>::remove(feed_id, prev_round_id);
 				}
+				// prune the oldest round
+				feed.prune_oldest();
 
-				Ok(().into())
-			})
+				T::OnAnswerHandler::on_answer(feed_id, round);
+				Self::deposit_event(Event::AnswerUpdated(
+					feed_id, round_id, new_answer, updated_at,
+				));
+			}
+
+			// update oracle rewards and try to reserve them
+			let payment = details.payment;
+			// track the debt in case we cannot reserve
+			T::Currency::reserve(&Self::account_id(), payment).or_else(
+				|_| -> DispatchResult {
+					// track the debt in case we cannot reserve
+					let mut new_debt = feed.config.debt;
+					new_debt = new_debt.checked_add(&payment).ok_or(Error::<T>::Overflow)?;
+
+					if let Some(max_debt) = feed.config.max_debt {
+						ensure!(new_debt <= max_debt, <Error<T>>::MaxDebtReached);
+					}
+
+					feed.config.debt = new_debt;
+					Ok(())
+				},
+			)?;
+
+			let mut oracle_meta = Self::oracle(&oracle).ok_or(Error::<T>::OracleNotFound)?;
+			oracle_meta.withdrawable = oracle_meta
+				.withdrawable
+				.checked_add(&payment)
+				.ok_or(Error::<T>::Overflow)?;
+			Oracles::<T>::insert(&oracle, oracle_meta);
+
+			// delete the details if the maximum count has been reached
+			if details.submissions.len() < max_count as usize {
+				Details::<T>::insert(feed_id, round_id, details);
+			}
+
+			Ok(().into())
 		}
 
 		/// Disable and add oracles for the given feed.
 		/// Limited to the owner of a feed.
 		#[pallet::weight(T::WeightInfo::change_oracles(to_disable.len() as u32, to_add.len() as u32))]
+		#[transactional]
 		pub fn change_oracles(
 			origin: OriginFor<T>,
 			feed_id: T::FeedId,
 			to_disable: Vec<T::AccountId>,
 			to_add: Vec<(T::AccountId, T::AccountId)>,
-		) -> DispatchResultWithPostInfo {
+		) -> DispatchResult {
 			let owner = ensure_signed(origin)?;
 
-			with_transaction_result(|| -> DispatchResultWithPostInfo {
-				// synced on drop
-				let mut feed = Feed::<T>::load_from(feed_id).ok_or(Error::<T>::FeedNotFound)?;
-				feed.ensure_owner(&owner)?;
-				feed.disable_oracles(to_disable)?;
-				feed.add_oracles(to_add)?;
+			// synced on drop
+			let mut feed = Feed::<T>::load_from(feed_id).ok_or(Error::<T>::FeedNotFound)?;
+			feed.ensure_owner(&owner)?;
+			feed.disable_oracles(to_disable)?;
+			feed.add_oracles(to_add)?;
 
-				Ok(().into())
-			})
+			Ok(().into())
 		}
 
 		/// Update the configuration for future oracle rounds.
 		/// Limited to the owner of a feed.
 		#[pallet::weight(T::WeightInfo::update_future_rounds())]
+		#[transactional]
 		pub fn update_future_rounds(
 			origin: OriginFor<T>,
 			feed_id: T::FeedId,
@@ -1042,22 +1194,20 @@ pub mod pallet {
 			submission_count_bounds: (u32, u32),
 			restart_delay: u32,
 			timeout: T::BlockNumber,
-		) -> DispatchResultWithPostInfo {
+		) -> DispatchResult {
 			let owner = ensure_signed(origin)?;
-			with_transaction_result(|| {
-				// synced on drop
-				let mut feed = Feed::<T>::load_from(feed_id).ok_or(Error::<T>::FeedNotFound)?;
-				feed.ensure_owner(&owner)?;
+			// synced on drop
+			let mut feed = Feed::<T>::load_from(feed_id).ok_or(Error::<T>::FeedNotFound)?;
+			feed.ensure_owner(&owner)?;
 
-				feed.update_future_rounds(
-					payment,
-					submission_count_bounds,
-					restart_delay,
-					timeout,
-				)?;
+			feed.update_future_rounds(
+				payment,
+				submission_count_bounds,
+				restart_delay,
+				timeout,
+			)?;
 
-				Ok(().into())
-			})
+			Ok(().into())
 		}
 
 		// --- feed: round requests ---
@@ -1115,37 +1265,36 @@ pub mod pallet {
 		/// Request the start of a new oracle round.
 		/// Limited to accounts with "requester" permission.
 		#[pallet::weight(T::WeightInfo::request_new_round())]
+		#[transactional]
 		pub fn request_new_round(
 			origin: OriginFor<T>,
 			feed_id: T::FeedId,
-		) -> DispatchResultWithPostInfo {
+		) -> DispatchResult {
 			let sender = ensure_signed(origin)?;
 			let mut requester =
 				Self::requester(feed_id, &sender).ok_or(Error::<T>::NotAuthorizedRequester)?;
 
-			with_transaction_result(|| -> DispatchResultWithPostInfo {
-				let mut feed = Feed::<T>::load_from(feed_id).ok_or(Error::<T>::FeedNotFound)?;
+			let mut feed = Feed::<T>::load_from(feed_id).ok_or(Error::<T>::FeedNotFound)?;
 
-				let new_round = feed
-					.reporting_round_id()
-					.checked_add(One::one())
-					.ok_or(Error::<T>::Overflow)?;
-				let last_started = requester.last_started_round.unwrap_or_else(Zero::zero);
-				let next_allowed_round = last_started
-					.checked_add(requester.delay)
-					.ok_or(Error::<T>::Overflow)?;
-				ensure!(
-					requester.last_started_round.is_none() || new_round > next_allowed_round,
-					Error::<T>::CannotRequestRoundYet
-				);
+			let new_round = feed
+				.reporting_round_id()
+				.checked_add(One::one())
+				.ok_or(Error::<T>::Overflow)?;
+			let last_started = requester.last_started_round.unwrap_or_else(Zero::zero);
+			let next_allowed_round = last_started
+				.checked_add(requester.delay)
+				.ok_or(Error::<T>::Overflow)?;
+			ensure!(
+				requester.last_started_round.is_none() || new_round > next_allowed_round,
+				Error::<T>::CannotRequestRoundYet
+			);
 
-				requester.last_started_round = Some(new_round);
-				Requesters::<T>::insert(feed_id, &sender, requester);
+			requester.last_started_round = Some(new_round);
+			Requesters::<T>::insert(feed_id, &sender, requester);
 
-				feed.request_new_round(sender)?;
+			feed.request_new_round(sender)?;
 
-				Ok(().into())
-			})
+			Ok(().into())
 		}
 
 		// --- oracle operations ---
@@ -1692,7 +1841,7 @@ pub mod pallet {
 						OracleMeta {
 							withdrawable: Zero::zero(),
 							admin,
-							..Default::default()
+							pending_admin: None
 						},
 					);
 				}
@@ -1840,7 +1989,7 @@ pub mod pallet {
 				self.id,
 				new_round_id,
 				RoundDetails {
-					submissions: Vec::new(),
+					submissions: Default::default(),
 					submission_count_bounds: self.config.submission_count_bounds,
 					payment: self.config.payment,
 					timeout: self.config.timeout,
@@ -1871,8 +2020,10 @@ pub mod pallet {
 
 		/// Store the feed config in storage.
 		fn sync_to_storage(&mut self) {
-			Feeds::<T>::insert(self.id, sp_std::mem::take(&mut self.config));
+			// LTK: Why just simply insert without take ?
+			Feeds::<T>::insert(self.id, &self.config);
 		}
+		
 	}
 
 	// We want the feed to sync automatically when going out of scope.

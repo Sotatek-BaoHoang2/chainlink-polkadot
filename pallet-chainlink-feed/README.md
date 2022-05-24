@@ -3,7 +3,7 @@
 This pallet provides Chainlink price feed functionality to Substrate-based chains that include it.
 
 It aims to mostly port
-the [FluxAggregator](https://github.com/smartcontractkit/chainlink/blob/dabada25f5dd7bbc49a76ed1d172a83083cdd8f0/evm-contracts/src/v0.6/FluxAggregator.sol)
+the [FluxAggregator](https://github.com/smartcontractkit/chainlink/blob/dabada2oracle5f5dd7bbc49a76ed1d172a83083cdd8f0/evm-contracts/src/v0.6/FluxAggregator.sol)
 Solidity contract but changes the design in the following ways:
 
 + **Storage Pruning:** It is usually not advisable to keep all oracle state around, so a feed supports automatic storage

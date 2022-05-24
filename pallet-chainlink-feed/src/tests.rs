@@ -1,5 +1,5 @@
 use super::*;
-use crate::{mock::*, utils::with_transaction_result, Error};
+use crate::{mock::*, Error};
 use frame_support::traits::ReservableCurrency;
 use frame_support::{
 	assert_noop, assert_ok,
