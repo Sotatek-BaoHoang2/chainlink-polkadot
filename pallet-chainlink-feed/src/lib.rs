@@ -20,6 +20,8 @@ mod utils;
 #[frame_support::pallet]
 pub mod pallet {
 	// use codec::{Decode, Encode};
+	pub use crate::feed::{FeedBuilder, FeedBuilderOf};
+	use crate::{traits::OnAnswerHandler, utils::median};
 	use frame_support::{
 		dispatch::{DispatchError, DispatchResult, DispatchResultWithPostInfo, HasCompact},
 		pallet_prelude::*,
@@ -30,27 +32,19 @@ pub mod pallet {
 		BoundedVec, PalletId, Parameter,
 	};
 	use frame_system::{ensure_signed, pallet_prelude::*};
+	use lite_json::json::JsonValue;
 	use sp_arithmetic::traits::BaseArithmetic;
 	use sp_runtime::traits::{
 		AccountIdConversion, CheckedAdd, CheckedSub, Member, One, Saturating, Zero,
 	};
-	use sp_std::{
-		convert::{TryFrom, TryInto},
-		prelude::*,
-	};
 	use sp_runtime::{
-		offchain::{
-			http,
-			Duration,
-		},
+		offchain::{http, Duration},
 		RuntimeDebug,
 	};
 	use sp_std::vec::Vec;
-	use lite_json::json::JsonValue;
-	pub use crate::feed::{FeedBuilder, FeedBuilderOf};
-	use crate::{
-		traits::OnAnswerHandler,
-		utils::median,
+	use sp_std::{
+		convert::{TryFrom, TryInto},
+		prelude::*,
 	};
 
 	pub type BalanceOf<T> =
@@ -118,7 +112,9 @@ pub mod pallet {
 	/// Round data relevant to consumers.
 	/// Will only be constructed once minimum amount of submissions have
 	/// been provided.
-	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+	#[derive(
+		Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen,
+	)]
 	pub struct Round<BlockNumber, Value> {
 		pub started_at: BlockNumber,
 		pub answer: Option<Value>,
@@ -151,8 +147,11 @@ pub mod pallet {
 		pub timeout: BlockNumber,
 	}
 
-	pub type RoundDetailsOf<T> =
-		RoundDetails<BalanceOf<T>, <T as frame_system::Config>::BlockNumber, BoundedVec<<T as Config>::Value, <T as Config>::OracleCountLimit>>;
+	pub type RoundDetailsOf<T> = RoundDetails<
+		BalanceOf<T>,
+		<T as frame_system::Config>::BlockNumber,
+		BoundedVec<<T as Config>::Value, <T as Config>::OracleCountLimit>,
+	>;
 
 	/// Meta data tracking withdrawable rewards and admin for an oracle.
 	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
@@ -165,7 +164,9 @@ pub mod pallet {
 	pub type OracleMetaOf<T> = OracleMeta<<T as frame_system::Config>::AccountId, BalanceOf<T>>;
 
 	/// Meta data tracking the oracle status for a feed.
-	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+	#[derive(
+		Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen,
+	)]
 	pub struct OracleStatus<Value> {
 		pub starting_round: RoundId,
 		pub ending_round: Option<RoundId>,
@@ -193,14 +194,18 @@ pub mod pallet {
 	}
 
 	/// Used to store round requester permissions for accounts.
-	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug, MaxEncodedLen, TypeInfo)]
+	#[derive(
+		Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug, MaxEncodedLen, TypeInfo,
+	)]
 	pub struct Requester {
 		pub delay: RoundId,
 		pub last_started_round: Option<RoundId>,
 	}
 
 	/// Round data as served by the `FeedInterface`.
-	#[derive(Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug, MaxEncodedLen, TypeInfo)]
+	#[derive(
+		Clone, Encode, Decode, Default, Eq, PartialEq, RuntimeDebug, MaxEncodedLen, TypeInfo,
+	)]
 	pub struct RoundData<BlockNumber, Value> {
 		pub started_at: BlockNumber,
 		pub answer: Value,
@@ -309,7 +314,13 @@ pub mod pallet {
 		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
 
 		/// Type for feed indexing.
-		type FeedId: Member + Parameter + Default + Copy + HasCompact + BaseArithmetic + MaxEncodedLen;
+		type FeedId: Member
+			+ Parameter
+			+ Default
+			+ Copy
+			+ HasCompact
+			+ BaseArithmetic
+			+ MaxEncodedLen;
 
 		/// Oracle feed values.
 		type Value: Member
@@ -339,7 +350,7 @@ pub mod pallet {
 
 		/// Maximum number of oracles per feed.
 		#[pallet::constant]
-		type OracleCountLimit: Get<u32> ;
+		type OracleCountLimit: Get<u32>;
 
 		/// Maximum number of feeds.
 		type FeedLimit: Get<Self::FeedId>;
@@ -357,12 +368,16 @@ pub mod pallet {
 
 	// LTK : this PR https://github.com/paritytech/substrate/pull/10403 has removed default account
 	#[pallet::type_value]
-	pub fn DefaultAccount<T: Config>() -> T::AccountId { T::AccountId::decode(&mut sp_runtime::traits::TrailingZeroInput::zeroes()).expect("infinite length input; no invalid inputs for type; qed") }
+	pub fn DefaultAccount<T: Config>() -> T::AccountId {
+		T::AccountId::decode(&mut sp_runtime::traits::TrailingZeroInput::zeroes())
+			.expect("infinite length input; no invalid inputs for type; qed")
+	}
 
 	#[pallet::storage]
 	#[pallet::getter(fn pallet_admin)]
 	/// The account controlling the funds for this pallet.
-	pub type PalletAdmin<T: Config> = StorageValue<Value = T::AccountId, QueryKind = ValueQuery, OnEmpty = DefaultAccount<T>>;
+	pub type PalletAdmin<T: Config> =
+		StorageValue<Value = T::AccountId, QueryKind = ValueQuery, OnEmpty = DefaultAccount<T>>;
 
 	#[pallet::storage]
 	// possible optimization: put together with admin?
@@ -596,7 +611,6 @@ pub mod pallet {
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-
 		fn on_finalize(_block_number: T::BlockNumber) {
 			log::info!("***** Chainlink Pricefeed on_finalize");
 		}
@@ -617,15 +631,16 @@ pub mod pallet {
 			// all logging and thus, remove any logging from the WASM.
 			log::info!("***** Chainlink Pricefeed Offchain worker");
 
-			Self::fetch_price().map_err(|err| log::warn!("{:?}", err)).ok();
-			Self::trigger_chainlink_job().map_err(|err| log::warn!("{:?}", err)).ok();
+			Self::fetch_price()
+				.map_err(|err| log::warn!("{:?}", err))
+				.ok();
 		}
 	}
 
 	impl<T: Config> Pallet<T> {
 		/// Shortcut for getting account ID
 		fn account_id() -> T::AccountId {
-			T::PalletId::get().into_account()
+			T::PalletId::get().into_account_truncating()
 		}
 
 		/// Get debt by FeedId
@@ -686,89 +701,55 @@ pub mod pallet {
 			// you can find in `sp_io`. The API is trying to be similar to `reqwest`, but
 			// since we are running in a custom WASM execution environment we can't simply
 			// import the library here.
-			let request =
-				http::Request::get("https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=USD");
+			let request = http::Request::get(
+				"https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=USD",
+			);
 			// We set the deadline for sending of the request, note that awaiting response can
 			// have a separate deadline. Next we send the request, before that it's also possible
 			// to alter request headers or stream body content in case of non-GET requests.
-			let pending = request.deadline(deadline).send().map_err(|_| http::Error::IoError)?;
-	
+			let pending = request
+				.deadline(deadline)
+				.send()
+				.map_err(|_| http::Error::IoError)?;
+
 			// The request is already being processed by the host, we are free to do anything
 			// else in the worker (we can send multiple concurrent requests too).
 			// At some point however we probably want to check the response though,
 			// so we can block current thread and wait for it to finish.
 			// Note that since the request is being driven by the host, we don't have to wait
 			// for the request to have it complete, we will just not read the response.
-			let response = pending.try_wait(deadline).map_err(|_| http::Error::DeadlineReached)??;
+			let response = pending
+				.try_wait(deadline)
+				.map_err(|_| http::Error::DeadlineReached)??;
 			// Let's check the status code before we proceed to reading the response.
 			if response.code != 200 {
 				log::warn!("Unexpected status code: {}", response.code);
-				return Err(http::Error::Unknown)
+				return Err(http::Error::Unknown);
 			}
-	
+
 			// Next we want to fully read the response body and collect it to a vector of bytes.
 			// Note that the return object allows you to read the body in chunks as well
 			// with a way to control the deadline.
 			let body = response.body().collect::<Vec<u8>>();
-	
+
 			// Create a str slice from the body.
 			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
 				log::warn!("No UTF8 body");
 				http::Error::Unknown
 			})?;
-	
+
 			let price = match Self::parse_price(body_str) {
 				Some(price) => Ok(price),
 				None => {
 					log::warn!("Unable to extract price from the response: {:?}", body_str);
 					Err(http::Error::Unknown)
-				},
-			}?;
-	
-			log::warn!("Got price: {} cents", price);
-	
-			Ok(price)
-		}		
-
-		fn trigger_chainlink_job() -> Result<(), http::Error> {
-
-			let post_body = vec![r#"{
-				"id": "001",
-				"data":{
-					"request_type": "triggerexternaljob",
-					"job_external_uuid": "9ce988a3-9b74-4525-91fd-2709b7815789",
-					"request_id": "002",
-					"feed_id": "0",
-					"round_id": "15"
 				}
-			
-			}"#];
+			}?;
 
-			let request = http::Request::post("http://sublink-adapter:8080", post_body);
-			let timeout =
-				sp_io::offchain::timestamp().add(Duration::from_millis(2_000));
-			let pending = request
-				.deadline(timeout)
-				.send()
-				.map_err(|_| http::Error::IoError)?;
-		
-			let response = pending
-				.try_wait(timeout)
-				.map_err(|_| http::Error::DeadlineReached)??;
-		
-			if response.code != 200 {
-				return Err(http::Error::Unknown);
-			}
-			let body = response.body().collect::<Vec<u8>>();
-			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-				log::warn!("No UTF8 body");
-				http::Error::Unknown
-			})?;
-			// let response_result: ResponseResult = serde_json::from_str::<ResponseResult>(&res_body)
-			// 	.map_err(|_| http::Error::IoError)?;
-			log::warn!("Got answer: {:?}", body_str);
-			Ok(())
-		}		
+			log::warn!("Got price: {} cents", price);
+
+			Ok(price)
+		}
 
 		/// Parse the price from the given JSON string using `lite-json`.
 		///
@@ -777,19 +758,20 @@ pub mod pallet {
 			let val = lite_json::parse_json(price_str);
 			let price = match val.ok()? {
 				JsonValue::Object(obj) => {
-					let (_, v) = obj.into_iter().find(|(k, _)| k.iter().copied().eq("USD".chars()))?;
+					let (_, v) = obj
+						.into_iter()
+						.find(|(k, _)| k.iter().copied().eq("USD".chars()))?;
 					match v {
 						JsonValue::Number(number) => number,
 						_ => return None,
 					}
-				},
+				}
 				_ => return None,
 			};
 
 			let exp = price.fraction_length.saturating_sub(2);
 			Some(price.integer as u32 * 100 + (price.fraction / 10_u64.pow(exp)) as u32)
 		}
-
 	}
 
 	#[pallet::call]
@@ -860,7 +842,6 @@ pub mod pallet {
 			pruning_window: Option<u32>,
 			max_debt: Option<BalanceOf<T>>,
 		) -> DispatchResult {
-
 			log::info!("***** Creating feed");
 			let owner = ensure_signed(origin)?;
 			ensure!(
@@ -1079,10 +1060,13 @@ pub mod pallet {
 			}
 
 			// record submission
-			let mut details = Details::<T>::take(feed_id, round_id)
-				.ok_or(Error::<T>::NotAcceptingSubmissions)?;
+			let mut details =
+				Details::<T>::take(feed_id, round_id).ok_or(Error::<T>::NotAcceptingSubmissions)?;
 			// LTK : should check number of submissions
-			details.submissions.try_push(submission).expect("Enough submissions for this round");
+			details
+				.submissions
+				.try_push(submission)
+				.expect("Enough submissions for this round");
 
 			oracle_status.last_reported_round = Some(round_id);
 			oracle_status.latest_submission = Some(submission);
@@ -1132,20 +1116,18 @@ pub mod pallet {
 			// update oracle rewards and try to reserve them
 			let payment = details.payment;
 			// track the debt in case we cannot reserve
-			T::Currency::reserve(&Self::account_id(), payment).or_else(
-				|_| -> DispatchResult {
-					// track the debt in case we cannot reserve
-					let mut new_debt = feed.config.debt;
-					new_debt = new_debt.checked_add(&payment).ok_or(Error::<T>::Overflow)?;
+			T::Currency::reserve(&Self::account_id(), payment).or_else(|_| -> DispatchResult {
+				// track the debt in case we cannot reserve
+				let mut new_debt = feed.config.debt;
+				new_debt = new_debt.checked_add(&payment).ok_or(Error::<T>::Overflow)?;
 
-					if let Some(max_debt) = feed.config.max_debt {
-						ensure!(new_debt <= max_debt, <Error<T>>::MaxDebtReached);
-					}
+				if let Some(max_debt) = feed.config.max_debt {
+					ensure!(new_debt <= max_debt, <Error<T>>::MaxDebtReached);
+				}
 
-					feed.config.debt = new_debt;
-					Ok(())
-				},
-			)?;
+				feed.config.debt = new_debt;
+				Ok(())
+			})?;
 
 			let mut oracle_meta = Self::oracle(&oracle).ok_or(Error::<T>::OracleNotFound)?;
 			oracle_meta.withdrawable = oracle_meta
@@ -1200,12 +1182,7 @@ pub mod pallet {
 			let mut feed = Feed::<T>::load_from(feed_id).ok_or(Error::<T>::FeedNotFound)?;
 			feed.ensure_owner(&owner)?;
 
-			feed.update_future_rounds(
-				payment,
-				submission_count_bounds,
-				restart_delay,
-				timeout,
-			)?;
+			feed.update_future_rounds(payment, submission_count_bounds, restart_delay, timeout)?;
 
 			Ok(().into())
 		}
@@ -1266,10 +1243,7 @@ pub mod pallet {
 		/// Limited to accounts with "requester" permission.
 		#[pallet::weight(T::WeightInfo::request_new_round())]
 		#[transactional]
-		pub fn request_new_round(
-			origin: OriginFor<T>,
-			feed_id: T::FeedId,
-		) -> DispatchResult {
+		pub fn request_new_round(origin: OriginFor<T>, feed_id: T::FeedId) -> DispatchResult {
 			let sender = ensure_signed(origin)?;
 			let mut requester =
 				Self::requester(feed_id, &sender).ok_or(Error::<T>::NotAuthorizedRequester)?;
@@ -1841,7 +1815,7 @@ pub mod pallet {
 						OracleMeta {
 							withdrawable: Zero::zero(),
 							admin,
-							pending_admin: None
+							pending_admin: None,
 						},
 					);
 				}
@@ -2023,7 +1997,6 @@ pub mod pallet {
 			// LTK: Why just simply insert without take ?
 			Feeds::<T>::insert(self.id, &self.config);
 		}
-		
 	}
 
 	// We want the feed to sync automatically when going out of scope.
